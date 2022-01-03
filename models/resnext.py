@@ -160,7 +160,7 @@ class CifarResNeXt(nn.Module):
         x = self.stage_3.forward(x)
         x = F.adaptive_avg_pool2d(x, 1)
         x = x.view(-1, self.stages[3])
-        return self.classifier(x)
+        return x, self.classifier(x)
 
 
 def build_resnext(cardinality, depth, width, num_classes):
