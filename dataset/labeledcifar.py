@@ -226,33 +226,40 @@ dict_transform = {
 }
 
 
-def GetCifar(dataset, seenclass_number, labeled_ratio):
+def GetCifar(dataset, seenclass_number, labeled_ratio,train_transform=-1):
     cifar10_mean = (0.4914, 0.4822, 0.4465)
     cifar10_std = (0.2471, 0.2435, 0.2616)
     cifar100_mean = (0.5071, 0.4867, 0.4408)
     cifar100_std = (0.2675, 0.2565, 0.2761)
     normal_mean = (0.5, 0.5, 0.5)
     normal_std = (0.5, 0.5, 0.5)
-    if dataset == 'cifar10':
+
+    if dataset == 'cifar10':    
+        if train_transform ==-1:
+            train_transform = TransformFixMatch(mean=cifar10_mean, std=cifar10_std)
+        else :
+            train_transform = dict_transform['cifar_test']
         train_label_set = LABELEDCIFAR10(root='./data', seenclass_number=seenclass_number, labeled_ratio=labeled_ratio,
                                          labeled=True, download=True,
-                                         transform=TransformFixMatch(mean=cifar10_mean, std=cifar10_std))
+                                         transform=train_transform)
         train_unlabel_set = LABELEDCIFAR10(root='./data', seenclass_number=seenclass_number,
                                            labeled_ratio=labeled_ratio, labeled=False, download=True,
-                                           transform=TransformFixMatch(
-                                               mean=cifar10_mean, std=cifar10_std),
+                                           transform=train_transform ,
                                            unlabeled_idxs=train_label_set.unlabeled_idxs)
         test_set = LABELEDCIFAR10(root='./data', seenclass_number=seenclass_number, labeled_ratio=labeled_ratio,
                                   labeled=False, download=True,
                                   transform=dict_transform['cifar_test'], unlabeled_idxs=train_label_set.unlabeled_idxs)
     elif dataset == 'cifar100':
+        if train_transform ==-1:
+            train_transform = TransformFixMatch(mean=cifar100_mean, std=cifar100_std)
+        else :
+            train_transform = dict_transform['cifar_test']
         train_label_set = LABELEDCIFAR100(root='./data', seenclass_number=seenclass_number, labeled_ratio=labeled_ratio,
                                           labeled=True, download=True,
-                                          transform=TransformFixMatch(mean=cifar100_mean, std=cifar100_std))
+                                          transform=train_transform)
         train_unlabel_set = LABELEDCIFAR100(root='./data', seenclass_number=seenclass_number,
                                             labeled_ratio=labeled_ratio, labeled=False, download=True,
-                                            transform=TransformFixMatch(
-                                                mean=cifar100_mean, std=cifar100_std),
+                                            transform=train_transform,
                                             unlabeled_idxs=train_label_set.unlabeled_idxs)
         test_set = LABELEDCIFAR100(root='./data', seenclass_number=seenclass_number, labeled_ratio=labeled_ratio,
                                    labeled=False, download=True,

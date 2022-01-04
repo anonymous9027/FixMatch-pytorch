@@ -53,3 +53,75 @@ def loss_ort(b1, b2):
     onehot = torch.tensor(t, dtype=torch.long).cuda()
     # print(onehot)
     return (F.cross_entropy(dist_mat, onehot, reduction='mean')+F.cross_entropy(dist_mat.t(), onehot, reduction='mean'))*0.5
+
+
+
+
+
+
+class Memory(nn.Module):
+    """
+    Build a MoCo memory with a queue
+    https://arxiv.org/abs/1911.05722
+    """
+
+    def __init__(self, dim=512, K=65536):
+        """
+        dim: feature dimension (default: 128)
+        K: queue size; number of negative keys (default: 65536)
+        """
+        super().__init__()
+        self.K = K
+
+        self.margin = 0.25
+        self.gamma = 32
+
+        # create the queue
+        self.register_buffer("queue", torch.randn(dim, K))
+        self.queue = F.normalize(self.queue, dim=0)
+
+        self.register_buffer(
+            "queue_label", torch.zeros((1, K), dtype=torch.long))
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+    @torch.no_grad()
+    def _dequeue_and_enqueue(self, keys, targets):
+        # gather keys/targets before updating queue
+        if comm.get_world_size() > 1:
+            keys = concat_all_gather(keys)
+            targets = concat_all_gather(targets)
+        else:
+            keys = keys.detach()
+            targets = targets.detach()
+
+        batch_size = keys.shape[0]
+
+        ptr = int(self.queue_ptr)
+        assert self.K % batch_size == 0  # for simplicity
+
+        # replace the keys at ptr (dequeue and enqueue)
+        self.queue[:, ptr:ptr + batch_size] = keys.T
+        self.queue_label[:, ptr:ptr + batch_size] = targets
+        ptr = (ptr + batch_size) % self.K  # move pointer
+
+        self.queue_ptr[0] = ptr
+
+    def forward(self, cls_outputs, old_cls_outputs, bank_clsoutputs, gt_labels, memoryidbank):
+
+        loss = self.__cross_entropy_loss(
+            cls_outputs, old_cls_outputs, bank_clsoutputs, gt_labels, memoryidbank)
+        return loss
+    
+    def loss_con(d1,d2, is_pos,T=1):
+        dist_mat = cosine_dist(d1,d2)    
+        probs1= F.softmax(dist_mat)  #  exp(i)/ \sum exp
+        loss1 = torch.log((is_pos*probs1).sum(dim=1))
+        loss1 = F.softplus(loss1).mean()
+
+        probs2= F.softmax(dist_mat).T  #  exp(i)/ \sum exp
+        loss2 = torch.log((is_pos*probs2).sum(dim=1))
+        loss2 = F.softplus(loss2).mean()
+
+        return (loss1+loss2).sum()
+
+
