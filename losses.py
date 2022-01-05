@@ -2,6 +2,7 @@ import torch.nn.functional as F
 import torch
 import numpy as np
 from sklearn.utils.linear_assignment_ import linear_assignment
+import torch.nn as nn
 
 
 def cluster_acc(y_true, y_pred):
@@ -54,8 +55,16 @@ def loss_ort(b1, b2):
     # print(onehot)
     return (F.cross_entropy(dist_mat, onehot, reduction='mean')+F.cross_entropy(dist_mat.t(), onehot, reduction='mean'))*0.5
 
+def loss_sel(b1,b2):
+    b1=torch.pow(F.softmax(b1),2)
+    b2=torch.pow(F.softmax(b2),2)
+    n,m = b1.shape
+    b1 = b1/ torch.sum(b1,dim=1,keepdim=True).expand(n,m)
+    b2= b2 /torch.sum(b2,dim=1,keepdim=True).expand(n,m)
+    #print(b1[0],torch.sum(b1[0]))
+    loss = b1*torch.log(b2+1e-6)+b2*torch.log(b1+1e-6)
 
-
+    return - loss.mean()
 
 
 
@@ -65,7 +74,7 @@ class Memory(nn.Module):
     https://arxiv.org/abs/1911.05722
     """
 
-    def __init__(self, dim=512, K=65536):
+    def __init__(self, dim=512, K=8192):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
@@ -87,15 +96,9 @@ class Memory(nn.Module):
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys, targets):
         # gather keys/targets before updating queue
-        if comm.get_world_size() > 1:
-            keys = concat_all_gather(keys)
-            targets = concat_all_gather(targets)
-        else:
-            keys = keys.detach()
-            targets = targets.detach()
-
+        keys = keys.detach()
+        targets = targets.detach()
         batch_size = keys.shape[0]
-
         ptr = int(self.queue_ptr)
         assert self.K % batch_size == 0  # for simplicity
 
@@ -106,22 +109,30 @@ class Memory(nn.Module):
 
         self.queue_ptr[0] = ptr
 
-    def forward(self, cls_outputs, old_cls_outputs, bank_clsoutputs, gt_labels, memoryidbank):
+    def forward(self, emb_u_w, emb_u_s, emb_l_w, emb_l_s,index_u,index_l,sim):
 
-        loss = self.__cross_entropy_loss(
-            cls_outputs, old_cls_outputs, bank_clsoutputs, gt_labels, memoryidbank)
-        return loss
-    
-    def loss_con(d1,d2, is_pos,T=1):
-        dist_mat = cosine_dist(d1,d2)    
-        probs1= F.softmax(dist_mat)  #  exp(i)/ \sum exp
-        loss1 = torch.log((is_pos*probs1).sum(dim=1))
+        self._dequeue_and_enqueue(torch.cat((emb_u_w,emb_l_w)),torch.cat((index_u,index_l)))
+        #print(sim.shape)
+        la=torch.cat((index_u,index_l)).detach().cpu().numpy().tolist() 
+        lb=self.queue_label.detach().cpu().numpy().tolist()
+        ispos=[]
+        for i in lb[0]:
+            #print(len(la),i)
+            ispos.append(sim[i,la])
+        ispos=np.array(ispos,dtype='double').T
+        #print(ispos.shape)
+
+        is_pos = torch.tensor(ispos).cuda()
+        l_con = self.loss_con(torch.cat((emb_u_s,emb_l_s)), self.queue.T.cuda(),is_pos)
+        return l_con
+
+    def loss_con(self,d1, d2, is_pos, T=1):
+        dist_mat = cosine_dist(d1, d2)
+        probs1 = F.softmax(dist_mat)  # exp(i)/ \sum exp
+        loss1 = torch.log((is_pos.float()*probs1.float()+1e-6).sum(dim=1))
         loss1 = F.softplus(loss1).mean()
-
-        probs2= F.softmax(dist_mat).T  #  exp(i)/ \sum exp
+        '''probs2 = F.softmax(dist_mat).T  # exp(i)/ \sum exp
         loss2 = torch.log((is_pos*probs2).sum(dim=1))
-        loss2 = F.softplus(loss2).mean()
+        loss2 = F.softplus(loss2).mean()'''
 
-        return (loss1+loss2).sum()
-
-
+        return loss1.sum()

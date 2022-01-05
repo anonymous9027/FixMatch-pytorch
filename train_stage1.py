@@ -20,7 +20,7 @@ from tqdm import tqdm
 # from dataset.cifar import DATASET_GETTERS
 from dataset.labeledcifar import GetCifar
 from utils import AverageMeter, accuracy
-from losses import loss_ort
+from losses import loss_ort, loss_sel
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -344,6 +344,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         losses = AverageMeter()
         losses_sup = AverageMeter()
         losses_ort = AverageMeter()
+        losses_sel = AverageMeter()
         # mask_probs = AverageMeter()
         if not args.no_progress:
             p_bar = tqdm(range(args.eval_step),
@@ -397,8 +398,10 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             '''
             L_sup = (F.cross_entropy(logits_l_w, targets_x, reduction='mean') + F.cross_entropy(logits_l_s, targets_x,
                                                                                                 reduction='mean')) * 0.5
-            # loss_ort(torch.cat((logits_l_w, logits_u_w)),
-            L_ort = torch.tensor(0).cuda()
+            L_ort = loss_ort(torch.cat((logits_l_w, logits_u_w)),torch.cat((logits_l_s, logits_u_s)))
+
+            L_sel = loss_sel(logits_u_s,logits_u_w)
+            #L_ort = torch.tensor(0).cuda()
             #       torch.cat((logits_l_s, logits_u_s)))
             '''pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
@@ -408,7 +411,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                                   reduction='none') * mask).mean()
 
             loss = Lx + args.lambda_u * Lu'''
-            loss = L_sup + L_ort
+            loss = L_sup + L_ort + L_sel
 
             if args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -419,6 +422,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             losses.update(loss.item())
             losses_sup.update(L_sup.item())
             losses_ort.update(L_ort.item())
+            losses_sel.update(L_sel.item())
             optimizer.step()
             scheduler.step()
             if args.use_ema:
@@ -430,7 +434,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             # mask_probs.update(mask.mean().item())
             if not args.no_progress:
                 p_bar.set_description(
-                    "Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_sup: {loss_x:.4f}. Loss_ort: {loss_u:.4f}.  ".format(
+                    "Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_sup: {loss1:.4f}. Loss_ort: {loss2:.4f}.  Loss_sel: {loss3:.4f}. ".format(
                         epoch=epoch + 1,
                         epochs=args.epochs,
                         batch=batch_idx + 1,
@@ -439,8 +443,9 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                         data=data_time.avg,
                         bt=batch_time.avg,
                         loss=losses.avg,
-                        loss_x=losses_sup.avg,
-                        loss_u=losses_ort.avg,
+                        loss1=losses_sup.avg,
+                        loss2=losses_ort.avg,
+                        loss3=losses_sel.avg,
                         # mask=mask_probs.avg
                     ))
                 p_bar.update()
@@ -463,6 +468,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 'train/2.train_loss_sup', losses_sup.avg, epoch)
             args.writer.add_scalar(
                 'train/3.train_loss_ort', losses_ort.avg, epoch)
+            args.writer.add_scalar(
+                'train/4.train_loss_sel', losses_sel.avg, epoch)
             # args.writer.add_scalar('train/4.mask', mask_probs.avg, epoch)
             args.writer.add_scalar('test/1.test_acc', test_acc, epoch)
             args.writer.add_scalar('test/2.test_loss', test_loss, epoch)

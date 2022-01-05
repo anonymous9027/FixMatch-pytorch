@@ -25,7 +25,6 @@ from losses import loss_ort
 logger = logging.getLogger(__name__)
 
 
-
 def main():
     parser = argparse.ArgumentParser(description='PyTorch FixMatch Training')
     parser.add_argument('--gpu-id', default='0', type=int,
@@ -161,7 +160,7 @@ def main():
     unlabeled_trainloader = DataLoader(
         unlabeled_dataset,
         sampler=train_sampler(unlabeled_dataset),
-        batch_size=args.batch_size ,
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
         drop_last=True)
 
@@ -192,14 +191,12 @@ def main():
         args.start_epoch = checkpoint['epoch']
         model.load_state_dict(checkpoint['state_dict'])
 
-
-
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.local_rank],
             output_device=args.local_rank, find_unused_parameters=True)
-    res=[]
-    ind=[]
+    res = []
+    ind = []
     model.eval()
     for batch_idx, (inputs, targets, indexes) in enumerate(labeled_trainloader):
         embs, _ = model(inputs.cuda())
@@ -212,29 +209,28 @@ def main():
             res.append(embs[i].cpu().detach().numpy())
             ind.append(indexes[i].cpu().detach().numpy())
 
-    for batch_idx, (inputs, targets, indexes) in enumerate(test_loader):
+    '''for batch_idx, (inputs, targets, indexes) in enumerate(test_loader):
         embs, _ = model(inputs.cuda())
         for i in range(embs.shape[0]):
             res.append(embs[i].cpu().detach().numpy())
-            ind.append(indexes[i].cpu().detach().numpy())
-    embs=np.zeros( (len(res),res[0].shape[0]))
+            ind.append(indexes[i].cpu().detach().numpy())'''
+    embs = np.zeros((len(res), res[0].shape[0]))
     for i in range(len(res)):
-        embs[ind[i]]=res[i]
-    embs= torch.tensor(embs)
+        embs[ind[i]] = res[i]
+    embs = torch.tensor(embs)
     from losses import cosine_dist
-    dist = cosine_dist(embs,embs)
-    _, topkindex= torch.topk(dist,k=args.top_k, dim=1)
+    dist = cosine_dist(embs, embs)
+    _, topkindex = torch.topk(dist, k=args.top_k, dim=1)
     del dist
-    print(topkindex.shape,topkindex[0:10])
-    sim = np.zeros((len(res),len(res)))
+    print(topkindex.shape, topkindex[0:10])
+    sim = np.zeros((len(res), len(res)))
     for i in range(len(res)):
-        sim[i][topkindex[i].cpu().numpy().tolist()]=1
-    #print(sim[0:10],sim[0,13445])
-    res=sim * sim.T
-    sav={"embs":embs,"sim":res}
+        sim[i][topkindex[i].cpu().numpy().tolist()] = 1
+    # print(sim[0:10],sim[0,13445])
+    res = sim * sim.T
+    #sav = {"embs": embs, "sim": res}
     import joblib
-    joblib.dump(sav,open(args.out+'/res.pkl','wb'))
-
+    joblib.dump(res, open(args.out+'/res.pkl', 'wb'))
 
 
 if __name__ == '__main__':

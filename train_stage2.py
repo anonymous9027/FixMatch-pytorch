@@ -20,7 +20,7 @@ from tqdm import tqdm
 # from dataset.cifar import DATASET_GETTERS
 from dataset.labeledcifar import GetCifar
 from utils import AverageMeter, accuracy
-from losses import loss_ort
+from losses import loss_ort, loss_sel
 
 logger = logging.getLogger(__name__)
 best_acc = 0
@@ -131,7 +131,7 @@ def main():
     parser.add_argument('--eval-only', action='store_true')
     parser.add_argument('--seenclass-number', type=int, default=5)
     parser.add_argument('--labeled-ratio', type=float, default=0.5)
-    parser.add_argument('--embs', type=str, default='result/res.pkl')
+    parser.add_argument('--embed_mat', type=str, default='result/res.pkl')
     args = parser.parse_args()
     global best_acc
 
@@ -323,11 +323,15 @@ def main():
 
 def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
           model, optimizer, ema_model, scheduler):
-    import joblib
-    tot_embs = joblib.dump(open(args.embs,'rb'))
     if args.amp:
         from apex import amp
     global best_acc
+
+    import joblib
+    from losses import Memory
+    sims = joblib.load(open(args.embed_mat, 'rb'))
+    mem1= Memory()
+    mem2= Memory()
     test_accs = []
     end = time.time()
 
@@ -347,6 +351,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
         losses = AverageMeter()
         losses_sup = AverageMeter()
         losses_ort = AverageMeter()
+        losses_sel = AverageMeter()
+        losses_con = AverageMeter()
         # mask_probs = AverageMeter()
         if not args.no_progress:
             p_bar = tqdm(range(args.eval_step),
@@ -391,17 +397,21 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             logits_l_w, logits_l_s = logits[:batch_size * 2].chunk(2)
             logits_u_w, logits_u_s = logits[batch_size * 2:].chunk(2)
             del logits
-            '''
+            
             embeddings_l_w, embeddings_l_s = embeddings[:batch_size * 2].chunk(
                 2)
             embeddings_u_w, embeddings_u_s = embeddings[batch_size * 2:].chunk(
                 2)
             del embeddings
-            '''
+            
             L_sup = (F.cross_entropy(logits_l_w, targets_x, reduction='mean') + F.cross_entropy(logits_l_s, targets_x,
                                                                                                 reduction='mean')) * 0.5
-            # loss_ort(torch.cat((logits_l_w, logits_u_w)),
-            L_ort = torch.tensor(0).cuda()
+            L_ort = loss_ort(torch.cat((logits_l_w, logits_u_w)),torch.cat((logits_l_s, logits_u_s)))
+
+            L_sel = loss_sel(logits_u_s,logits_u_w)
+
+            L_con = mem1(embeddings_u_w, embeddings_u_s, embeddings_l_w, embeddings_l_s,index_u,index_l,sims)+mem2(embeddings_u_s, embeddings_u_w, embeddings_l_s, embeddings_l_w,index_u,index_l,sims)
+            #L_ort = torch.tensor(0).cuda()
             #       torch.cat((logits_l_s, logits_u_s)))
             '''pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
@@ -411,7 +421,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                                   reduction='none') * mask).mean()
 
             loss = Lx + args.lambda_u * Lu'''
-            loss = L_sup + L_ort
+            loss = L_sup + L_ort + L_sel + L_con
 
             if args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -422,6 +432,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             losses.update(loss.item())
             losses_sup.update(L_sup.item())
             losses_ort.update(L_ort.item())
+            losses_sel.update(L_sel.item())
+            losses_con.update(L_con.item())
             optimizer.step()
             scheduler.step()
             if args.use_ema:
@@ -433,7 +445,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             # mask_probs.update(mask.mean().item())
             if not args.no_progress:
                 p_bar.set_description(
-                    "Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_sup: {loss_x:.4f}. Loss_ort: {loss_u:.4f}.  ".format(
+                    "Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_sup: {loss1:.4f}. Loss_ort: {loss2:.4f}.  Loss_sel: {loss3:.4f}. Loss_con: {loss4:.4f}".format(
                         epoch=epoch + 1,
                         epochs=args.epochs,
                         batch=batch_idx + 1,
@@ -442,8 +454,10 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                         data=data_time.avg,
                         bt=batch_time.avg,
                         loss=losses.avg,
-                        loss_x=losses_sup.avg,
-                        loss_u=losses_ort.avg,
+                        loss1=losses_sup.avg,
+                        loss2=losses_ort.avg,
+                        loss3=losses_sel.avg,
+                        loss4=losses_con.avg,
                         # mask=mask_probs.avg
                     ))
                 p_bar.update()
@@ -466,6 +480,10 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
                 'train/2.train_loss_sup', losses_sup.avg, epoch)
             args.writer.add_scalar(
                 'train/3.train_loss_ort', losses_ort.avg, epoch)
+            args.writer.add_scalar(
+                'train/4.train_loss_sel', losses_sel.avg, epoch)
+            args.writer.add_scalar(
+                'train/5.train_loss_con', losses_con.avg, epoch)
             # args.writer.add_scalar('train/4.mask', mask_probs.avg, epoch)
             args.writer.add_scalar('test/1.test_acc', test_acc, epoch)
             args.writer.add_scalar('test/2.test_loss', test_loss, epoch)
